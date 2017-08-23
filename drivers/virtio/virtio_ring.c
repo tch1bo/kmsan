@@ -753,7 +753,7 @@ void *virtqueue_get_buf_ctx(struct virtqueue *_vq, unsigned int *len,
 
 	END_USE(vq);
 	// TODO(glider): we're receiving a buffer from the hypervisor here.
-	kmsan_unpoison_shadow(ret, *len);
+	///kmsan_unpoison_shadow(ret, *len);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(virtqueue_get_buf_ctx);
