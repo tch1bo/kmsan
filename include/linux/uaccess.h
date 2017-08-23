@@ -104,7 +104,7 @@ __copy_to_user_inatomic(void __user *to, const void *from, unsigned long n)
 	kasan_check_read(from, n);
 	check_object_size(from, n, true);
 	n = raw_copy_to_user(to, from, n);
-	kmsan_check_memory(from, to_copy - n);
+	kmsan_copy_to_user(to, from, to_copy, n);
 	return n;
 }
 
@@ -117,7 +117,7 @@ __copy_to_user(void __user *to, const void *from, unsigned long n)
 	kasan_check_read(from, n);
 	check_object_size(from, n, true);
 	n = raw_copy_to_user(to, from, n);
-	kmsan_check_memory(from, to_copy - n);
+	kmsan_copy_to_user(to, from, to_copy, n);
 	return n;
 }
 
@@ -196,7 +196,7 @@ copy_to_user(void __user *to, const void *from, unsigned long n)
 		copy_user_overflow(sz, n);
 	else
 		__bad_copy_user();
-	kmsan_check_memory(from, to_copy - n);
+	kmsan_copy_to_user(to, from, to_copy, n);
 
 	return n;
 }
