@@ -12,19 +12,30 @@ To achieve this goal it does not collect coverage in soft/hard interrupts
 and instrumentation of some inherently non-deterministic parts of kernel is
 disabled (e.g. scheduler, locking).
 
-Usage
------
+kcov is also able to collect comparison operands from the instrumented code
+(this feature currently requires that the kernel is compiled with clang).
+
+Prerequisites
+-------------
 
 Configure the kernel with::
 
         CONFIG_KCOV=y
 
 CONFIG_KCOV requires gcc built on revision 231296 or later.
+
+If the comparison operands need to be collected, set::
+
+	CONFIG_KCOV_COMPS=y
+
 Profiling data will only become accessible once debugfs has been mounted::
 
         mount -t debugfs none /sys/kernel/debug
 
-The following program demonstrates kcov usage from within a test program:
+Coverage collection
+-------------------
+The following program demonstrates coverage collection from within a test
+program using kcov:
 
 .. code-block:: c
 
@@ -43,6 +54,9 @@ The following program demonstrates kcov usage from within a test program:
     #define KCOV_ENABLE			_IO('c', 100)
     #define KCOV_DISABLE			_IO('c', 101)
     #define COVER_SIZE			(64<<10)
+
+    #define KCOV_TRACE_PC  0
+    #define KCOV_TRACE_CMP 1
 
     int main(int argc, char **argv)
     {
@@ -64,7 +78,7 @@ The following program demonstrates kcov usage from within a test program:
 	if ((void*)cover == MAP_FAILED)
 		perror("mmap"), exit(1);
 	/* Enable coverage collection on the current thread. */
-	if (ioctl(fd, KCOV_ENABLE, 0))
+	if (ioctl(fd, KCOV_ENABLE, KCOV_TRACE_PC))
 		perror("ioctl"), exit(1);
 	/* Reset coverage from the tail of the ioctl() call. */
 	__atomic_store_n(&cover[0], 0, __ATOMIC_RELAXED);
@@ -111,3 +125,74 @@ The interface is fine-grained to allow efficient forking of test processes.
 That is, a parent process opens /sys/kernel/debug/kcov, enables trace mode,
 mmaps coverage buffer and then forks child processes in a loop. Child processes
 only need to enable coverage (disable happens automatically on thread end).
+
+Comparison operands collection
+------------------------------
+Comparison operands collection is similar to coverage collection:
+
+.. code-block:: c
+    /* Same includes and defines. */
+
+     enum kcov_cmp_type {
+	/*
+	* LSB shows whether the first argument is a compile-time constant.
+	*/
+	KCOV_CMP_CONST = 1,
+	/*
+	* Second and third LSBs contain the size of arguments (1/2/4/8 bytes).
+	*/
+	KCOV_CMP_SIZE1 = 0,
+	KCOV_CMP_SIZE2 = 2,
+	KCOV_CMP_SIZE4 = 4,
+	KCOV_CMP_SIZE8 = 6,
+	KCOV_CMP_SIZE_MASK = 6,
+    };
+
+    int main(int argc, char **argv)
+    {
+	int fd;
+	uint64_t *cover, type, arg1, arg2, is_const, size;
+	unsigned long n, i;
+
+	fd = open("/sys/kernel/debug/kcov", O_RDWR);
+	if (fd == -1)
+		perror("open"), exit(1);
+	if (ioctl(fd, KCOV_INIT_TRACE, COVER_SIZE))
+		perror("ioctl"), exit(1);
+	/*
+	* Note that the buffer pointer is of type uint64_t*, because all
+	* the comparison operands are promoted to uint64_t.
+	*/
+	cover = (uint64_t *)mmap(NULL, COVER_SIZE * sizeof(unsigned long),
+				     PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if ((void*)cover == MAP_FAILED)
+		perror("mmap"), exit(1);
+	/* Note KCOV_TRACE_CMP instead of KCOV_TRACE_PC. */
+	if (ioctl(fd, KCOV_ENABLE, KCOV_TRACE_CMP))
+		perror("ioctl"), exit(1);
+	__atomic_store_n(&cover[0], 0, __ATOMIC_RELAXED);
+	read(-1, NULL, 0);
+	/* Read number of comparisons collected. */
+	n = __atomic_load_n(&cover[0], __ATOMIC_RELAXED);
+	for (i = 0; i < n; i++) {
+		type = cover[i*3 + 1];
+		/* arg1 and arg2 - operands of the comparison. */
+		arg1 = cover[i*3 + 2];
+		arg2 = cover[i*3 + 3];
+		/* size == KCOV_CMP_SIZEi. */
+		size = type & KCOV_CMP_SIZE_MASK;
+		/* is_const - shows whether arg1 is a compile-time constant.*/
+		is_const = type & KCOV_CMP_CONST;
+	}
+	if (ioctl(fd, KCOV_DISABLE, 0))
+		perror("ioctl"), exit(1);
+	/* Free resources. */
+	if (munmap(cover, COVER_SIZE * sizeof(unsigned long)))
+		perror("munmap"), exit(1);
+	if (close(fd))
+		perror("close"), exit(1);
+	return 0;
+    }
+
+Note that only one mode (coverage collection or comparison operands collection)
+can be enabled at a time.
